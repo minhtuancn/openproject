@@ -1,0 +1,157 @@
+# Docker Compose file for OpenProject production deployment (Coolify/Production)
+# This file is suitable for Coolify, Portainer, or other Docker orchestration platforms
+# For the official production Docker Compose setup, see: https://github.com/opf/openproject-docker-compose
+
+version: '3.8'
+
+networks:
+  openproject:
+    driver: bridge
+
+volumes:
+  pgdata:
+  opdata:
+
+services:
+  # PostgreSQL Database
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: openproject
+      POSTGRES_USER: openproject
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-changeme}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - openproject
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openproject"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Memcached for session and cache storage
+  cache:
+    image: memcached:1.6-alpine
+    restart: unless-stopped
+    networks:
+      - openproject
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "11211"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # OpenProject Web Application
+  web:
+    image: openproject/openproject:${OPENPROJECT_VERSION:-17.1}-slim
+    restart: unless-stopped
+    command: "./docker/prod/web"
+    depends_on:
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+    environment:
+      # Database configuration
+      DATABASE_URL: postgresql://openproject:${DATABASE_PASSWORD:-changeme}@db:5432/openproject
+      
+      # Cache configuration
+      OPENPROJECT_CACHE__MEMCACHE__SERVER: cache:11211
+      
+      # Application configuration
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE}
+      OPENPROJECT_HOST__NAME: ${OPENPROJECT_HOST__NAME}
+      OPENPROJECT_HTTPS: ${OPENPROJECT_HTTPS:-true}
+      OPENPROJECT_DEFAULT__LANGUAGE: ${OPENPROJECT_DEFAULT__LANGUAGE:-en}
+      
+      # Email configuration (optional - configure if needed)
+      # OPENPROJECT_EMAIL__DELIVERY__METHOD: smtp
+      # OPENPROJECT_SMTP__ADDRESS: smtp.example.com
+      # OPENPROJECT_SMTP__PORT: 587
+      # OPENPROJECT_SMTP__AUTHENTICATION: plain
+      # OPENPROJECT_SMTP__DOMAIN: example.com
+      # OPENPROJECT_SMTP__USER__NAME: ${SMTP_USERNAME}
+      # OPENPROJECT_SMTP__PASSWORD: ${SMTP_PASSWORD}
+      # OPENPROJECT_SMTP__ENABLE__STARTTLS__AUTO: true
+      
+      # Web server configuration
+      OPENPROJECT_WEB_WORKERS: ${OPENPROJECT_WEB_WORKERS:-2}
+      OPENPROJECT_WEB_TIMEOUT: 120
+      OPENPROJECT_WEB_MIN__THREADS: 4
+      OPENPROJECT_WEB_MAX__THREADS: 16
+      PORT: 8080
+    volumes:
+      - opdata:/var/openproject/assets
+    networks:
+      - openproject
+    ports:
+      - "${PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health_checks/default"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+  # Background Worker for async jobs
+  worker:
+    image: openproject/openproject:${OPENPROJECT_VERSION:-17.1}-slim
+    restart: unless-stopped
+    command: "./docker/prod/worker"
+    depends_on:
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+    environment:
+      # Database configuration
+      DATABASE_URL: postgresql://openproject:${DATABASE_PASSWORD:-changeme}@db:5432/openproject
+      
+      # Cache configuration
+      OPENPROJECT_CACHE__MEMCACHE__SERVER: cache:11211
+      
+      # Application configuration
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE}
+      OPENPROJECT_HOST__NAME: ${OPENPROJECT_HOST__NAME}
+      OPENPROJECT_HTTPS: ${OPENPROJECT_HTTPS:-true}
+      
+      # Worker-specific configuration
+      RAILS_MAX_THREADS: 4
+    volumes:
+      - opdata:/var/openproject/assets
+    networks:
+      - openproject
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "good_job"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # Cron service for scheduled tasks
+  cron:
+    image: openproject/openproject:${OPENPROJECT_VERSION:-17.1}-slim
+    restart: unless-stopped
+    command: "./docker/prod/cron"
+    depends_on:
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+    environment:
+      # Database configuration
+      DATABASE_URL: postgresql://openproject:${DATABASE_PASSWORD:-changeme}@db:5432/openproject
+      
+      # Cache configuration
+      OPENPROJECT_CACHE__MEMCACHE__SERVER: cache:11211
+      
+      # Application configuration
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE}
+      OPENPROJECT_HOST__NAME: ${OPENPROJECT_HOST__NAME}
+      OPENPROJECT_HTTPS: ${OPENPROJECT_HTTPS:-true}
+    volumes:
+      - opdata:/var/openproject/assets
+    networks:
+      - openproject
